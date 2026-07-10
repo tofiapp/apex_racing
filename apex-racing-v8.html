@@ -793,7 +793,8 @@ const TRACKS = {
 const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
 let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
 function resize(){W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;
-  canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);}
+  canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);
+  vignetteGrad=null;}
 addEventListener('resize',resize);resize();
 
 const norm=a=>Array.isArray(a)?{x:a[0],y:a[1]}:a;
@@ -892,9 +893,17 @@ function buildTrackGeom(C,N,w){
 }
 
 /* nejbližší bod na ose -> vzdálenost (kolize) + index (progres) */
-function nearest(px,py){const c=TRACK.center;let best=1e18,bi=0;
-  for(let i=0;i<c.length;i++){const dx=px-c[i].x,dy=py-c[i].y,d=dx*dx+dy*dy;if(d<best){best=d;bi=i;}}
-  return{dist:Math.sqrt(best),index:bi};}
+let lastNearIdx=0;
+function nearest(px,py){
+  const c=TRACK.center,N=c.length;if(!N)return{dist:0,index:0};
+  let bi=lastNearIdx,best=1e18;
+  const WIN=Math.min(140,N);
+  for(let d=-WIN;d<=WIN;d++){const i=(bi+d+N)%N;
+    const dx=px-c[i].x,dy=py-c[i].y,d2=dx*dx+dy*dy;if(d2<best){best=d2;bi=i;}}
+  if(best>TRACK.width*TRACK.width*6){
+    for(let i=0;i<N;i++){const dx=px-c[i].x,dy=py-c[i].y,d2=dx*dx+dy*dy;
+      if(d2<best){best=d2;bi=i;}}}
+  lastNearIdx=bi;return{dist:Math.sqrt(best),index:bi};}
 
 /* ---------- vykreslení tratě (živě, každý snímek) ---------- */
 function strokeLoop(c,C,w,style,dash){
@@ -1056,6 +1065,24 @@ function renderTrack(c){
   strokeLoop(c,C,2.2,'rgba(255,255,255,.20)',[18,24]);
   drawStartLine(c);
 }
+
+/* statická trať do offscreen cache – kreslí se jen při změně okruhu */
+let trackCache=null,trackCacheKey=null;
+function rebuildTrackCache(){
+  if(!TRACK)return;
+  trackCacheKey=trackKey;
+  const b=TRACK.bounds,pad=520;
+  const ox=b.minx-pad,oy=b.miny-pad,tw=Math.ceil(b.maxx-b.minx+pad*2),th=Math.ceil(b.maxy-b.miny+pad*2);
+  const tcan=document.createElement('canvas');tcan.width=tw;tcan.height=th;
+  const tc=tcan.getContext('2d');tc.translate(-ox,-oy);
+  renderTrack(tc);
+  trackCache={canvas:tcan,ox,oy};
+}
+function drawTrackCache(c){
+  if(!trackCache||trackCacheKey!==trackKey)rebuildTrackCache();
+  if(trackCache)c.drawImage(trackCache.canvas,trackCache.ox,trackCache.oy);
+}
+
 function drawStartLine(c){
   const C=TRACK.center,i=TRACK.startIndex,N=TRACK.N,w=TRACK.width;
   const a=C[i],b=C[(i+4)%N],ang=Math.atan2(b.y-a.y,b.x-a.x);
@@ -1116,11 +1143,12 @@ function resetTiming(){timing={lapStart:performance.now(),last:null,best:null,la
 
 function spawnCar(){const C=TRACK.center,i=TRACK.startIndex,N=TRACK.N;
   const a=C[i],b=C[(i+5)%N],ang=Math.atan2(b.y-a.y,b.x-a.x);
-  car={x:a.x,y:a.y,a:ang,vx:0,vy:0,off:false,lat:0};skids.length=0;manualGear=1;}
+  car={x:a.x,y:a.y,a:ang,vx:0,vy:0,off:false,lat:0};skids.length=0;manualGear=1;
+  lastNearIdx=i;}
 
 /* =================== SMYČKA =================== */
 let last=performance.now();
-function loop(now){const dt=Math.min((now-last)/1000,1/30);last=now;
+function loop(now){const dt=Math.min((now-last)/1000,1/60);last=now;
   if(mode===State.RACE)update(dt);
   if(mode!==State.MENU)render();
   requestAnimationFrame(loop);}
@@ -1190,23 +1218,31 @@ function update(dt){
 
 /* =================== RENDER =================== */
 const cam={x:0,y:0};
+let vignetteGrad=null,vignetteWH=0;
+function getVignette(){
+  const wh=W+H;
+  if(vignetteGrad&&vignetteWH===wh)return vignetteGrad;
+  vignetteWH=wh;
+  const g=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.72);
+  g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.34)');
+  vignetteGrad=g;return g;
+}
 function render(){
   ctx.setTransform(DPR,0,0,DPR,0,0);
   ctx.fillStyle='#1b3823';ctx.fillRect(0,0,W,H);
   if(!TRACK)return;
   const tx=car?car.x:cam.x,ty=car?car.y:cam.y;
-  cam.x+=(tx-cam.x)*0.12;cam.y+=(ty-cam.y)*0.12;
-  const z=Math.max(1.2,Math.min(2.4,Math.min(W,H)/460));
+  const sp=car?Math.hypot(car.vx,car.vy):0;
+  const camLerp=Math.min(0.42,0.26+sp/900);
+  cam.x+=(tx-cam.x)*camLerp;cam.y+=(ty-cam.y)*camLerp;
+  const z=Math.max(1.35,Math.min(2.55,Math.min(W,H)/420));
   ctx.save();
   ctx.translate(W/2,H/2);ctx.scale(z,z);ctx.translate(-cam.x,-cam.y);
-  renderTrack(ctx);
+  drawTrackCache(ctx);
   drawSkids(ctx);
   if(car)drawCar(ctx,car,carDef);
   ctx.restore();
-  // vinětace
-  const g=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.72);
-  g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.34)');
-  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle=getVignette();ctx.fillRect(0,0,W,H);
 }
 
 function roundRect(c,x,y,w,h,r){c.beginPath();c.moveTo(x+r,y);
@@ -1239,7 +1275,7 @@ function drawCar(c,car,D){
 }
 
 /* Kreslí auto z fotky – PNG s průhledností, stejné zobrazení jako v menu */
-const CAR_LEN=42, CAR_WID=18; // pevný bounding box – všechna auta stejně velká (contain)
+const CAR_LEN=54, CAR_WID=23; // větší bounding box = ostřejší auto na obrazovce
 function photoCarDims(iw,ih){
   const sc=Math.min(CAR_LEN/ih,CAR_WID/iw);
   return {dh:ih*sc,dw:iw*sc};
@@ -1255,12 +1291,14 @@ function drawPhotoCar(c,car,D){
     const img=CAR_IMGS[key];
     const iw=img.naturalWidth||img.width, ih=img.naturalHeight||img.height;
     const {dh,dw}=photoCarDims(iw,ih);
+    const spd=Math.hypot(car.vx,car.vy);
     c.save();
-    c.translate(2.5,3.5);
-    c.globalAlpha=0.18;
+    c.translate(2.8+spd*0.004,4.2+spd*0.006);
+    c.filter='blur(5px)';
+    c.globalAlpha=0.22;
     c.fillStyle='#000';
     c.beginPath();
-    c.ellipse(0,0,dh*0.46,dw*0.42,0,0,Math.PI*2);
+    c.ellipse(0,0,dh*0.48,dw*0.44,0,0,Math.PI*2);
     c.fill();
     c.restore();
   }
@@ -1272,6 +1310,16 @@ function drawPhotoCar(c,car,D){
     const {dh,dw}=photoCarDims(iw,ih);
     c.imageSmoothingEnabled=true; c.imageSmoothingQuality='high';
     c.drawImage(img, -dw/2, -dh/2, dw, dh);
+    // jemný lesk na kapotě
+    c.save();
+    c.globalCompositeOperation='soft-light';
+    const gloss=c.createLinearGradient(-dw*0.3,-dh*0.45,dw*0.2,dh*0.35);
+    gloss.addColorStop(0,'rgba(255,255,255,.28)');
+    gloss.addColorStop(0.45,'rgba(255,255,255,0)');
+    gloss.addColorStop(1,'rgba(0,0,0,.12)');
+    c.fillStyle=gloss;
+    c.fillRect(-dw/2,-dh/2,dw,dh);
+    c.restore();
   } else {
     // Fallback – vektorová silueta (jako drawGeneric)
     const lv=D.livery;
@@ -1403,30 +1451,47 @@ let toastT=null;
 function showToast(text,color){const t=el('toast');t.textContent=text;t.style.color=color;
   t.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('show'),1300);}
 
-const miniC=el('miniC');let mctx=null;
+const miniC=el('miniC');let mctx=null,miniStatic=null,miniStaticKey=null;
 function setupMini(){miniC.width=184*DPR;miniC.height=144*DPR;mctx=miniC.getContext('2d');
-  mctx.setTransform(DPR,0,0,DPR,0,0);}
-function drawMini(){
+  mctx.setTransform(DPR,0,0,DPR,0,0);miniStatic=null;miniStaticKey=null;}
+function buildMiniStatic(){
   if(!mctx)setupMini();
   const b=TRACK.bounds,C=TRACK.center,pad=12,w=184-pad*2,h=144-pad*2;
   const s=Math.min(w/(b.maxx-b.minx),h/(b.maxy-b.miny));
   const ox=pad+(w-(b.maxx-b.minx)*s)/2,oy=pad+(h-(b.maxy-b.miny)*s)/2;
   const X=p=>ox+(p.x-b.minx)*s,Y=p=>oy+(p.y-b.miny)*s;
-  mctx.clearRect(0,0,184,144);mctx.lineJoin='round';mctx.lineCap='round';
-  mctx.strokeStyle='rgba(255,255,255,.22)';mctx.lineWidth=6;
-  mctx.beginPath();mctx.moveTo(X(C[0]),Y(C[0]));
-  for(let i=2;i<C.length;i+=2)mctx.lineTo(X(C[i]),Y(C[i]));
-  mctx.closePath();mctx.stroke();
-  mctx.strokeStyle='#2a3038';mctx.lineWidth=3.2;mctx.stroke();
+  const tcan=document.createElement('canvas');tcan.width=184;tcan.height=144;
+  const mc=tcan.getContext('2d');
+  mc.lineJoin='round';mc.lineCap='round';
+  mc.strokeStyle='rgba(255,255,255,.22)';mc.lineWidth=6;
+  mc.beginPath();mc.moveTo(X(C[0]),Y(C[0]));
+  for(let i=2;i<C.length;i+=2)mc.lineTo(X(C[i]),Y(C[i]));
+  mc.closePath();mc.stroke();
+  mc.strokeStyle='#2a3038';mc.lineWidth=3.2;mc.stroke();
   const st=C[TRACK.startIndex];
-  mctx.fillStyle='#f1f1f1';mctx.beginPath();mctx.arc(X(st),Y(st),2.6,0,Math.PI*2);mctx.fill();
-  if(car){mctx.fillStyle='#d42a2f';mctx.beginPath();mctx.arc(X(car),Y(car),3.4,0,Math.PI*2);mctx.fill();}
+  mc.fillStyle='#f1f1f1';mc.beginPath();mc.arc(X(st),Y(st),2.6,0,Math.PI*2);mc.fill();
+  miniStatic=tcan;miniStaticKey=trackKey;
+}
+function drawMini(){
+  if(!mctx)setupMini();
+  if(!miniStatic||miniStaticKey!==trackKey)buildMiniStatic();
+  mctx.clearRect(0,0,184,144);
+  mctx.drawImage(miniStatic,0,0);
+  if(car){
+    const b=TRACK.bounds,C=TRACK.center,pad=12,w=184-pad*2,h=144-pad*2;
+    const s=Math.min(w/(b.maxx-b.minx),h/(b.maxy-b.miny));
+    const ox=pad+(w-(b.maxx-b.minx)*s)/2,oy=pad+(h-(b.maxy-b.miny)*s)/2;
+    const X=p=>ox+(p.x-b.minx)*s,Y=p=>oy+(p.y-b.miny)*s;
+    mctx.fillStyle='#d42a2f';mctx.beginPath();mctx.arc(X(car),Y(car),3.4,0,Math.PI*2);mctx.fill();
+  }
 }
 
 /* =================== OBRAZOVKY =================== */
 function startGame(){
   carKey=selCar;trackKey=selTrack;carDef=CARS[carKey];
   TRACK=buildTrack(TRACKS[trackKey]);
+  lastNearIdx=TRACK.startIndex;
+  rebuildTrackCache();
   el('mtitleName').textContent=TRACKS[trackKey].name;
   setupMini();
   el('menu').classList.add('hidden');el('hud').classList.remove('hidden');
