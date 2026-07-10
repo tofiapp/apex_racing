@@ -793,8 +793,7 @@ const TRACKS = {
 const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
 let W=0,H=0,DPR=Math.min(window.devicePixelRatio||1,2);
 function resize(){W=innerWidth;H=innerHeight;canvas.width=W*DPR;canvas.height=H*DPR;
-  canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);
-  vignetteGrad=null;}
+  canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(DPR,0,0,DPR,0,0);}
 addEventListener('resize',resize);resize();
 
 const norm=a=>Array.isArray(a)?{x:a[0],y:a[1]}:a;
@@ -1218,11 +1217,10 @@ function update(dt){
 
 /* =================== RENDER =================== */
 const cam={x:0,y:0};
-let vignetteGrad=null,vignetteWH=0;
+let vignetteGrad=null,vignetteWH=0,vignetteW=0,vignetteH=0;
 function getVignette(){
-  const wh=W+H;
-  if(vignetteGrad&&vignetteWH===wh)return vignetteGrad;
-  vignetteWH=wh;
+  if(vignetteGrad&&vignetteW===W&&vignetteH===H)return vignetteGrad;
+  vignetteW=W;vignetteH=H;vignetteWH=W+H;
   const g=ctx.createRadialGradient(W/2,H/2,Math.min(W,H)*0.35,W/2,H/2,Math.max(W,H)*0.72);
   g.addColorStop(0,'rgba(0,0,0,0)');g.addColorStop(1,'rgba(0,0,0,.34)');
   vignetteGrad=g;return g;
